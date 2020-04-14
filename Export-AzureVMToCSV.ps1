@@ -4,6 +4,7 @@
     [string]$tenantID=""
 ) 
 
+
 if ($subscriptionId -eq "") 
 {
     Write-Host "Subscription Id is missing."
@@ -41,74 +42,113 @@ $vmobjects = @()
 
 Write-Host Retrieving Azure VMs from subscription $sub.SubscriptionName
 
+
+class VMInformation {
+    [string]$SubscriptionName
+    [string]$VMName
+    [string]$ResourceGroupName
+    [string]$Location
+    [string]$VMSize
+    [string]$Status
+    [string]$AvailabilitySet
+    [string]$PrivateIP
+    [string]$PublicIPName
+    [string]$PublicIPAddress
+    [string]$OSType
+    [string]$PrimaryNICName
+    [string]$NSGName
+    [string]$Subnet
+    [string]$VNETName
+}
+
+
 #retrive all VMs in subscription
 $vms = Get-AzVM -Status
 try
     {
         foreach ($vm in $vms)
         {
+            Write-Output $vm.Name
             #retrive the Network configuration of VM
+            $allNicNames = @()
+            $allPrivateIps = @()
+            $allPublicIps = @()
+            $allPublicIpNames = @()
+            $allNSGs = @()
+            $allSubNets = @()
+            $allVnets = @()
             $nics = $vm.NetworkProfile.NetworkInterfaces
-            $nicTemp = Get-AzNetworkInterface -ResourceId $nics[0].Id
-            $privateIP = $nicTemp.IpConfigurations[0].PrivateIpAddress
-            
-
-            #get public IP address and its name
-            $publicIPId = $nicTemp.IpConfigurations[0].PublicIpAddress.Id
-            if($publicIPId -eq $null)
+            foreach($nic in $nics)
             {
-                $publicIP = "No PublicIP"
+                $currentNic = Get-AzNetworkInterface -ResourceId $nic.Id
+                $allNicNames += $currentNic.Name
+                $ipConfigs = $currentNic.IpConfigurations
+                foreach($ipConfig in $ipConfigs )
+                {
+                    $allPrivateIps += $ipConfigs.PrivateIpAddress
+                    if($null -eq $ipConfig.PublicIpAddress.Id)
+                    {
+                        $allPublicIpNames += "No PublicIP"
+                    }
+                    else
+                    {
+                        $tmpPubIp = $ipConfig.PublicIpAddress.Id.Substring($ipConfig.PublicIpAddress.Id.LastIndexOf("/")+1) 
+                        $allPublicIpNames +=$tmpPubIp 
+                        $tmpAddress = Get-AzPublicIpAddress -Name $tmpPubIp -ResourceGroupName $currentNic.ResourceGroupName  #Assumes that Public IP is in the same RG as the NIC
+                        if($null -ne $tmpAddress.IpAddress)
+                        {
+                            $allPublicIps += $tmpAddress.IpAddress
+                        } 
+                    }
+                   
+                    $tmpSubNet = $ipConfig.Subnet
+                    $allSubNets += (Get-AzVirtualNetworkSubnetConfig -ResourceId $tmpSubNet.Id).Name
+
+
+                    $tempString = $tmpSubNet.Id.Substring($tmpSubNet.Id.IndexOf("virtualNetworks"))
+                    $t = $tempString.Remove($tempString.IndexOf("/subnets"))
+                    $allVnets += $t.Substring($t.IndexOf("/") + 1)
+                }
+
+                $nsgId = $currentNic.NetworkSecurityGroup.Id
+                if($null -eq $nsgId)
+                {
+                    $allNSGs += "No NSG"
+                }
+                else
+                {
+                    $allNSGs += $nsgId.Substring($nsgId.LastIndexOf("/")+1)
+                }
+            }
+          
+            
+            if($null -eq $vm.AvailabilitySetReference.Id)
+            {
+                $availabiltySet = "None"
             }
             else
             {
-                $publicIP = $publicIPId.Substring($publicIPId.LastIndexOf("/")+1)                
-            }            
-            $publicIPAddress = Get-AzPublicIpAddress -Name $publicIP
-            
-
-            #get NSG name attached to primary NIC
-            $nsgId = $nicTemp.NetworkSecurityGroup.Id          
-            if($nsgId -eq $null)
-            {
-                $nsgName = "No NSG"
+                $availabiltySet = $vm.AvailabilitySetReference.Id.Substring($vm.AvailabilitySetReference.Id.LastIndexOf("/")+1)
             }
-            else
-            {
-                $nsgName = $nsgId.Substring($nsgId.LastIndexOf("/")+1)                
-            }
-            
 
+            $vmInfo = [VMInformation]@{
+                SubscriptionName = $sub.Name;
+                VMName = $vm.Name;
+                ResourceGroupName = $vm.ResourceGroupName;
+                Location = $vm.Location;
+                VMSize = $vm.HardwareProfile.VMSize;
+                Status = $vm.PowerState;
+                AvailabilitySet = $availabiltySet;
+                PrivateIP = $allPrivateIps  -join ",";
+                PublicIPName  = $allPublicIpNames  -join ",";
+                PublicIPAddress = $allPublicIps -join ",";
+                OSType = $vm.StorageProfile.OsDisk.OsType;
+                PrimaryNICName = $allNicNames -join ",";
+                NSGName = $allNSGs -join ",";
+                Subnet = $allSubNets -join ",";
+                VNETName = $allVnets -join ",";}
 
-            
-            $subnetId = $nicTemp.IpConfigurations[0].Subnet.Id            
-            $subnet = Get-AzVirtualNetworkSubnetConfig -ResourceId $subnetId
-            
-            #retrive VNET name to which Azure VM belongs
-            $tempString = $subnetId.Substring($subnetId.IndexOf("virtualNetworks"))
-            $t = $tempString.Remove($tempString.IndexOf("/subnets"))
-            $vnetName = $t.Substring($t.IndexOf("/") + 1)
-            
-            $vmInfo = 
-                @{
-                    'Subscription Name'                 = $sub.Name                
-                    'VM Name'                           = $vm.Name                    
-                    'Resource Group Name'               = $vm.ResourceGroupName
-                    'Location'                          = $vm.Location
-                    'VMSize'                            = $vm.HardwareProfile.VMSize
-                    'Status'                            = $vm.PowerState
-                    'Availability Set'                  = $vm.AvailabilitySetReference.Id 
-                    'Private IP'                        = $privateIP
-                    'Public IP Name'                    = $publicIP
-                    'Public IP Address'                 = $publicIPAddress.IpAddress
-                    'OS Type'                           = $vm.StorageProfile.OsDisk.OsType
-                    'primary NIC Name'                  = $nicTemp.Name
-                    'NSG Name'                          = $nsgName
-                    "Subnet"                            = $subnet.Name
-                    "VNET Name"                         = $vnetName                    
-                
-                 }
-
-            $vmobjects += New-Object PSObject -Property $vmInfo
+            $vmobjects += $vmInfo
         }  
     }
     catch
